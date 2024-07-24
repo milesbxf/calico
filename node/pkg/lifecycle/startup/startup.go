@@ -435,30 +435,52 @@ func ConfigureLogging() {
 // waitForConnection waits for the datastore to become accessible.
 func waitForConnection(ctx context.Context, c client.Interface) {
 	log.Info("Checking datastore connection")
+	attempts := 0
 	for {
-		// Query some arbitrary configuration to see if the connection
-		// is working.  Getting a specific Node is a good option, even
-		// if the Node does not exist.
-		_, err := c.Nodes().Get(ctx, "foo", options.GetOptions{})
-
-		// We only care about a couple of error cases, all others would
-		// suggest the datastore is accessible.
-		if err != nil {
-			switch err.(type) {
-			case cerrors.ErrorConnectionUnauthorized:
-				log.WithError(err).Warn("Connection to the datastore is unauthorized")
-				utils.Terminate()
-			case cerrors.ErrorDatastoreError:
-				log.WithError(err).Info("Hit error connecting to datastore - retry")
-				time.Sleep(1000 * time.Millisecond)
-				continue
-			}
+		connected, fatalErr := testConnection(ctx, c, attempts)
+		if connected {
+			log.Info("Datastore connection verified")
+			return
 		}
 
-		// We've connected to the datastore - break out of the loop.
-		break
+		if fatalErr != nil {
+			utils.Terminate()
+		}
+
+		// retry
+		time.Sleep(1 * time.Second)
+		attempts++
 	}
-	log.Info("Datastore connection verified")
+}
+
+func testConnection(ctx context.Context, c client.Interface, attempts int) (bool, error) {
+	timeout := 200 * time.Millisecond
+	timeout += time.Duration(attempts) * time.Second
+
+	tCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// Query some arbitrary configuration to see if the connection
+	// is working.  Getting a specific Node is a good option, even
+	// if the Node does not exist.
+	if _, err := c.Nodes().Get(tCtx, "foo", options.GetOptions{}); err != nil {
+		// We only care about a couple of error cases, all others would
+		// suggest the datastore is accessible.
+		switch err.(type) {
+		case cerrors.ErrorConnectionUnauthorized:
+			log.WithError(err).Warn("Connection to the datastore is unauthorized")
+			// don't retry since it's unlikely this will succeed
+			return false, err
+
+		case cerrors.ErrorDatastoreError:
+			log.WithError(err).Info("Hit error connecting to datastore - retry")
+			// some other error so let's retry
+			return false, nil
+		}
+	}
+
+	// connection successful
+	return true, nil
 }
 
 // getNode returns the current node configuration. If this node has not yet
